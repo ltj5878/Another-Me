@@ -6,8 +6,8 @@ from fastapi import HTTPException, UploadFile, status
 from docx import Document
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.models.article import ArticleChunk, SourceArticle
+from app.db.session import SessionLocal
 from app.models.style import StyleCategory
 from app.services.chunking import chunk_article
 from app.services.embeddings import count_tokens, get_embeddings
@@ -105,8 +105,7 @@ def upload_source_article(db: Session, style_id: UUID, file: UploadFile) -> Sour
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only .txt, .md, and .docx files are supported")
 
     raw_text = extract_text(file, suffix)
-    cleaned = clean_text(raw_text)
-    if not cleaned:
+    if not raw_text.strip():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File content is empty")
 
     article = SourceArticle(
@@ -115,58 +114,75 @@ def upload_source_article(db: Session, style_id: UUID, file: UploadFile) -> Sour
         source_type=SOURCE_TYPES[suffix],
         original_filename=filename[:255],
         raw_text=raw_text.strip(),
-        cleaned_text=cleaned,
-        word_count=count_words(cleaned),
-        status="cleaning",
+        cleaned_text="",
+        word_count=0,
+        status="uploaded",
     )
     db.add(article)
-    db.flush()
+    db.commit()
+    db.refresh(article)
+    return article
 
-    article_id = article.id
 
-    try:
-        article.status = "chunking"
-        db.flush()
-
-        chunk_results = chunk_article(cleaned, article.title)
-
-        article.status = "embedding"
-        db.flush()
-
-        texts = [c.content for c in chunk_results]
-        embeddings = get_embeddings(texts)
-
-        for cr, emb in zip(chunk_results, embeddings):
-            chunk = ArticleChunk(
-                source_article_id=article.id,
-                style_category_id=style.id,
-                chunk_index=cr.chunk_index,
-                content=cr.content,
-                embedding=emb,
-                token_count=count_tokens(cr.content),
-                chunk_metadata={
-                    "article_title": article.title,
-                    "position": cr.position,
-                    "paragraph_count": cr.paragraph_count,
-                    "writing_type": style.writing_type_hint,
-                },
-            )
-            db.add(chunk)
-
-        article.status = "completed"
-        db.commit()
-        db.refresh(article)
-        return article
-
-    except HTTPException:
-        raise
-    except Exception as exc:
-        db.rollback()
+def process_source_article(article_id: UUID) -> None:
+    with SessionLocal() as db:
         article = db.get(SourceArticle, article_id)
-        if article:
-            article.status = "failed"
+        if article is None:
+            return
+        style = db.get(StyleCategory, article.style_category_id)
+        if style is None:
+            _mark_article_failed(db, article_id)
+            return
+
+        try:
+            article.status = "cleaning"
             db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Processing failed: {exc}",
-        ) from exc
+
+            cleaned = clean_text(article.raw_text)
+            if not cleaned:
+                _mark_article_failed(db, article_id)
+                return
+            article.cleaned_text = cleaned
+            article.word_count = count_words(cleaned)
+            article.status = "chunking"
+            db.commit()
+
+            db.query(ArticleChunk).filter(ArticleChunk.source_article_id == article.id).delete()
+            chunk_results = chunk_article(cleaned, article.title)
+
+            article.status = "embedding"
+            db.commit()
+
+            texts = [c.content for c in chunk_results]
+            embeddings = get_embeddings(texts) if texts else []
+
+            for cr, emb in zip(chunk_results, embeddings):
+                chunk = ArticleChunk(
+                    source_article_id=article.id,
+                    style_category_id=style.id,
+                    chunk_index=cr.chunk_index,
+                    content=cr.content,
+                    embedding=emb,
+                    token_count=count_tokens(cr.content),
+                    chunk_metadata={
+                        "article_title": article.title,
+                        "position": cr.position,
+                        "paragraph_count": cr.paragraph_count,
+                        "writing_type": style.writing_type_hint,
+                    },
+                )
+                db.add(chunk)
+
+            article.status = "completed"
+            db.commit()
+        except Exception:
+            db.rollback()
+            _mark_article_failed(db, article_id)
+
+
+def _mark_article_failed(db: Session, article_id: UUID) -> None:
+    article = db.get(SourceArticle, article_id)
+    if article is None:
+        return
+    article.status = "failed"
+    db.commit()

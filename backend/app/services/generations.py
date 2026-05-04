@@ -1,3 +1,5 @@
+import json
+from collections.abc import Iterator
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -136,6 +138,96 @@ def debug_run_generation(db: Session, payload: GenerationDebugRun) -> Generation
     return _run_and_save_generation(db, style.id, final_prompt, payload.system_prompt, payload.user_prompt, metadata)
 
 
+def create_generation_stream(db: Session, payload: GenerationCreate) -> Iterator[str]:
+    try:
+        _validate_generation_payload(payload)
+        style = _get_style_with_profile(db, payload.style_category_id)
+        _ensure_llm_configured()
+        references = _maybe_search_references(db, payload.include_references, _generation_search_query(payload), payload.style_category_id, style.style_profile)
+        system_prompt = _build_system_prompt()
+        user_prompt = _build_user_prompt(style, style.style_profile, payload, references)
+        final_prompt = f"【System Prompt】\n{system_prompt}\n\n【User Prompt】\n{user_prompt}"
+        metadata = _build_metadata(payload, style.style_profile, references, system_prompt, user_prompt, operation_type="initial")
+        yield from _run_and_stream_generation(db, style.id, final_prompt, system_prompt, user_prompt, metadata)
+    except Exception as exc:
+        yield _sse_event("error", {"detail": _stream_error_message(exc)})
+
+
+def revise_generation_stream(db: Session, generation_id: UUID, payload: GenerationRevise) -> Iterator[str]:
+    try:
+        if payload.operation_type not in GENERATION_OPERATIONS:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不支持的修改操作")
+        source_task = _get_generation_task(db, generation_id)
+        source_output = _latest_output(source_task)
+        if source_task.status != "completed" or source_output is None or not source_output.content.strip():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前生成记录没有可修改的正文")
+
+        _ensure_llm_configured()
+        style = _get_style_with_profile(db, source_task.style_category_id)
+        source_metadata = source_output.metadata_json or {}
+        references = _maybe_search_references(
+            db,
+            payload.include_references,
+            str(source_metadata.get("user_input") or source_output.content[:1200]),
+            source_task.style_category_id,
+            style.style_profile,
+        )
+
+        if payload.operation_type == "regenerate":
+            generation_payload = _payload_from_source_metadata(source_task, source_metadata)
+            system_prompt = _build_system_prompt()
+            user_prompt = _build_user_prompt(style, style.style_profile, generation_payload, references)
+        else:
+            system_prompt = _build_revision_system_prompt()
+            user_prompt = _build_revision_user_prompt(style, style.style_profile, source_output.content, payload, references)
+
+        final_prompt = f"【System Prompt】\n{system_prompt}\n\n【User Prompt】\n{user_prompt}"
+        metadata = _build_revision_metadata(
+            payload,
+            style.style_profile,
+            references,
+            system_prompt,
+            user_prompt,
+            source_task,
+            source_output,
+            source_metadata,
+        )
+        yield from _run_and_stream_generation(db, style.id, final_prompt, system_prompt, user_prompt, metadata)
+    except Exception as exc:
+        yield _sse_event("error", {"detail": _stream_error_message(exc)})
+
+
+def debug_run_generation_stream(db: Session, payload: GenerationDebugRun) -> Iterator[str]:
+    try:
+        style = db.get(StyleCategory, payload.style_category_id)
+        if style is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="风格分类不存在")
+        _ensure_llm_configured()
+
+        source_task = _get_generation_task(db, payload.source_generation_id) if payload.source_generation_id else None
+        source_output = _latest_output(source_task) if source_task else None
+        source_metadata = source_output.metadata_json if source_output else {}
+        metadata = {
+            "operation_type": "debug_prompt",
+            "operation_label": OPERATION_LABELS["debug_prompt"],
+            "source_generation_id": str(source_task.id) if source_task else None,
+            "source_output_id": str(source_output.id) if source_output else None,
+            "display_title": _build_display_title(source_metadata or {}, OPERATION_LABELS["debug_prompt"]),
+            "debug_prompt_modified": True,
+            "system_prompt": payload.system_prompt,
+            "user_prompt": payload.user_prompt,
+            "retrieved_chunks": list((source_metadata or {}).get("retrieved_chunks") or []),
+            "style_profile_snapshot": dict((source_metadata or {}).get("style_profile_snapshot") or {}),
+            "model": settings.llm_model,
+            "reasoning_effort": GENERATION_REASONING_EFFORT,
+            "thinking": {"type": "enabled"},
+        }
+        final_prompt = f"【System Prompt】\n{payload.system_prompt}\n\n【User Prompt】\n{payload.user_prompt}"
+        yield from _run_and_stream_generation(db, style.id, final_prompt, payload.system_prompt, payload.user_prompt, metadata)
+    except Exception as exc:
+        yield _sse_event("error", {"detail": _stream_error_message(exc)})
+
+
 def list_generations(
     db: Session,
     style_id: UUID | None = None,
@@ -251,6 +343,54 @@ def _run_and_save_generation(
     db.add(GeneratedOutput(generation_task_id=task.id, content=content, metadata_json=metadata))
     db.commit()
     return get_generation(db, task.id)
+
+
+def _run_and_stream_generation(
+    db: Session,
+    style_id: UUID,
+    final_prompt: str,
+    system_prompt: str,
+    user_prompt: str,
+    metadata: dict,
+) -> Iterator[str]:
+    task = GenerationTask(style_category_id=style_id, prompt=final_prompt, status="running")
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+
+    yield _sse_event("started", {
+        "generation_id": str(task.id),
+        "style_category_id": str(style_id),
+        "metadata": metadata,
+    })
+
+    content_parts: list[str] = []
+    try:
+        for delta in _call_deepseek_stream(system_prompt, user_prompt):
+            if not delta:
+                continue
+            content_parts.append(delta)
+            yield _sse_event("delta", {"content": delta})
+    except Exception as exc:
+        task.status = "failed"
+        db.add(GeneratedOutput(generation_task_id=task.id, content="", metadata_json={**metadata, "error": str(exc)}))
+        db.commit()
+        yield _sse_event("error", {"generation_id": str(task.id), "detail": f"文章生成失败：{exc}"})
+        return
+
+    content = "".join(content_parts).strip()
+    if not content:
+        task.status = "failed"
+        db.add(GeneratedOutput(generation_task_id=task.id, content="", metadata_json={**metadata, "error": "DeepSeek 没有返回正文"}))
+        db.commit()
+        yield _sse_event("error", {"generation_id": str(task.id), "detail": "文章生成失败：DeepSeek 没有返回正文"})
+        return
+
+    task.status = "completed"
+    db.add(GeneratedOutput(generation_task_id=task.id, content=content, metadata_json=metadata))
+    db.commit()
+    completed = get_generation(db, task.id)
+    yield _sse_event("completed", completed.model_dump(mode="json"))
 
 
 def _latest_output(task: GenerationTask | None) -> GeneratedOutput | None:
@@ -676,6 +816,38 @@ def _call_deepseek(system_prompt: str, user_prompt: str) -> str:
     if not content.strip():
         raise RuntimeError("DeepSeek 没有返回正文")
     return content.strip()
+
+
+def _call_deepseek_stream(system_prompt: str, user_prompt: str) -> Iterator[str]:
+    client = OpenAI(api_key=settings.llm_api_key, base_url=settings.llm_base_url)
+    response = client.chat.completions.create(
+        model=settings.llm_model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        reasoning_effort=GENERATION_REASONING_EFFORT,
+        extra_body={"thinking": {"type": "enabled"}},
+        stream=True,
+    )
+    for chunk in response:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        content = getattr(delta, "content", None) or ""
+        if content:
+            yield content
+
+
+def _sse_event(event: str, data: dict) -> str:
+    payload = json.dumps(data, ensure_ascii=False)
+    return f"event: {event}\ndata: {payload}\n\n"
+
+
+def _stream_error_message(exc: Exception) -> str:
+    if isinstance(exc, HTTPException):
+        return str(exc.detail)
+    return str(exc) or "请求失败"
 
 
 def _to_generation_read(task: GenerationTask) -> GenerationRead:

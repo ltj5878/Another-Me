@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -10,8 +10,8 @@ from app.models.style import StyleCategory
 from app.schemas.article import SourceArticleDetailRead, SourceArticleRead
 from app.schemas.style import WRITING_TYPE_HINTS, StyleCategoryCreate, StyleCategoryRead, StyleCategoryUpdate
 from app.schemas.style_profile import StyleProfileMetricsRead, StyleProfileStatusRead, StyleProfileUpdate
-from app.services.articles import upload_source_article
-from app.services.style_profiles import generate_profile, get_profile_metrics, get_profile_status, update_profile
+from app.services.articles import process_source_article, upload_source_article
+from app.services.style_profiles import get_profile_metrics, get_profile_status, start_profile_generation, update_profile
 
 router = APIRouter()
 
@@ -120,8 +120,14 @@ def get_style_profile_metrics(style_id: UUID, db: Session = Depends(get_db)) -> 
 
 
 @router.post("/{style_id}/profile/generate", response_model=StyleProfileStatusRead)
-def generate_style_profile(style_id: UUID, db: Session = Depends(get_db)) -> StyleProfileStatusRead:
-    return generate_profile(db, style_id)
+def generate_style_profile(
+    style_id: UUID,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> StyleProfileStatusRead:
+    result = start_profile_generation(db, style_id)
+    background_tasks.add_task(start_profile_generation_background, style_id)
+    return result
 
 
 @router.patch("/{style_id}/profile", response_model=StyleProfileStatusRead)
@@ -170,5 +176,18 @@ def delete_article(style_id: UUID, article_id: UUID, db: Session = Depends(get_d
 
 
 @router.post("/{style_id}/articles/upload", response_model=SourceArticleRead, status_code=status.HTTP_201_CREATED)
-def upload_article(style_id: UUID, file: UploadFile = File(...), db: Session = Depends(get_db)) -> SourceArticle:
-    return upload_source_article(db, style_id, file)
+def upload_article(
+    style_id: UUID,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> SourceArticle:
+    article = upload_source_article(db, style_id, file)
+    background_tasks.add_task(process_source_article, article.id)
+    return article
+
+
+def start_profile_generation_background(style_id: UUID) -> None:
+    from app.services.style_profiles import run_profile_generation_background
+
+    run_profile_generation_background(style_id)

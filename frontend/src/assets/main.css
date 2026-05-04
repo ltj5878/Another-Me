@@ -839,6 +839,12 @@ h2 {
   line-height: 1.9;
 }
 
+.stream-status {
+  margin-bottom: 12px;
+  color: var(--accent-strong);
+  font-size: 13px;
+}
+
 .el-button--primary {
   --el-button-bg-color: var(--accent);
   --el-button-border-color: var(--accent);

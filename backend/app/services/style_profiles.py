@@ -1,5 +1,6 @@
 import json
 import re
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -8,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import settings
+from app.db.session import SessionLocal
 from app.models.article import SourceArticle
 from app.models.style import StyleCategory, StyleProfile
 from app.schemas.style_profile import PROFILE_FIELD_NAMES, StyleProfileMetricsRead, StyleProfileStatusRead, StyleProfileUpdate
@@ -59,6 +61,51 @@ def get_profile_metrics(db: Session, style_id: UUID) -> StyleProfileMetricsRead:
     return StyleProfileMetricsRead(style_category_id=style_id, metrics=analyze_style_metrics(articles))
 
 
+def start_profile_generation(db: Session, style_id: UUID) -> StyleProfileStatusRead:
+    style = db.get(StyleCategory, style_id)
+    if style is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Style category not found")
+    if not settings.llm_api_key:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="LLM_API_KEY is not configured")
+
+    completed_article_count = db.scalar(
+        select(func.count(SourceArticle.id)).where(
+            SourceArticle.style_category_id == style_id,
+            SourceArticle.status == "completed",
+        )
+    ) or 0
+    if completed_article_count < MIN_PROFILE_ARTICLES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"At least {MIN_PROFILE_ARTICLES} completed articles are required to generate a style profile",
+        )
+
+    profile = style.style_profile
+    if profile is None:
+        profile = StyleProfile(style_category_id=style.id, profile_json={}, version=1)
+        db.add(profile)
+        db.flush()
+
+    profile.profile_json = {
+        **(profile.profile_json or {}),
+        "profile_generation_status": "running",
+        "profile_generation_error": None,
+        "profile_generation_started_at": _now_iso(),
+        "profile_generation_finished_at": None,
+    }
+    db.commit()
+    return get_profile_status(db, style_id)
+
+
+def run_profile_generation_background(style_id: UUID) -> None:
+    with SessionLocal() as db:
+        try:
+            _generate_profile_into_db(db, style_id)
+        except Exception as exc:
+            db.rollback()
+            _mark_profile_generation_failed(db, style_id, str(exc))
+
+
 def update_profile(db: Session, style_id: UUID, payload: StyleProfileUpdate) -> StyleProfileStatusRead:
     style = db.get(StyleCategory, style_id)
     if style is None:
@@ -85,6 +132,11 @@ def update_profile(db: Session, style_id: UUID, payload: StyleProfileUpdate) -> 
 
 
 def generate_profile(db: Session, style_id: UUID) -> StyleProfileStatusRead:
+    _generate_profile_into_db(db, style_id)
+    return get_profile_status(db, style_id)
+
+
+def _generate_profile_into_db(db: Session, style_id: UUID) -> None:
     style = db.get(StyleCategory, style_id)
     if style is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Style category not found")
@@ -114,12 +166,37 @@ def generate_profile(db: Session, style_id: UUID) -> StyleProfileStatusRead:
     profile.profile_json = {
         **generated,
         "deep_metrics": deep_metrics,
+        "profile_generation_status": "completed",
+        "profile_generation_error": None,
+        "profile_generation_started_at": (profile.profile_json or {}).get("profile_generation_started_at"),
+        "profile_generation_finished_at": _now_iso(),
     }
     for field_name in PROFILE_FIELD_NAMES:
         setattr(profile, field_name, _coerce_profile_field(generated.get(field_name)))
 
     db.commit()
-    return get_profile_status(db, style_id)
+
+
+def _mark_profile_generation_failed(db: Session, style_id: UUID, error: str) -> None:
+    style = db.get(StyleCategory, style_id)
+    if style is None:
+        return
+    profile = style.style_profile
+    if profile is None:
+        profile = StyleProfile(style_category_id=style.id, profile_json={}, version=1)
+        db.add(profile)
+        db.flush()
+    profile.profile_json = {
+        **(profile.profile_json or {}),
+        "profile_generation_status": "failed",
+        "profile_generation_error": error[:1000],
+        "profile_generation_finished_at": _now_iso(),
+    }
+    db.commit()
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat()
 
 
 def _load_completed_articles_with_chunks(db: Session, style_id: UUID) -> list[SourceArticle]:

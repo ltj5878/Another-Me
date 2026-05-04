@@ -59,7 +59,9 @@
           <el-input v-model="form.extraRequirements" type="textarea" :rows="3" placeholder="可选，例如：不要鸡汤；结尾留一个余味；观点更克制。" />
         </el-form-item>
 
-        <el-button type="primary" :icon="EditPen" :loading="generating" @click="handleGenerate">生成文章</el-button>
+        <el-button type="primary" :icon="EditPen" :loading="generating" @click="handleGenerate">
+          {{ generating ? '生成中' : '生成文章' }}
+        </el-button>
       </el-form>
 
       <aside class="writer-note">
@@ -97,8 +99,8 @@
           <p>每次改写都会保存为一条新的生成历史，不覆盖当前记录。</p>
         </div>
         <div class="result-actions">
-          <el-button :icon="Download" :disabled="!currentGeneration?.output?.content" @click="exportMarkdown">导出 Markdown</el-button>
-          <el-button :icon="DocumentCopy" :disabled="!currentGeneration?.output?.content" @click="copyResult">复制正文</el-button>
+          <el-button :icon="Download" :disabled="!displayedContent || isStreaming" @click="exportMarkdown">导出 Markdown</el-button>
+          <el-button :icon="DocumentCopy" :disabled="!displayedContent" @click="copyResult">复制正文</el-button>
         </div>
       </div>
 
@@ -108,13 +110,15 @@
           :key="operation.type"
           size="small"
           :loading="operationLoading === operation.type"
+          :disabled="isStreaming"
           @click="handleRevision(operation.type)"
         >
           {{ operation.label }}
         </el-button>
       </div>
 
-      <pre v-if="currentGeneration?.output?.content" class="generated-content">{{ currentGeneration.output.content }}</pre>
+      <div v-if="isStreaming" class="stream-status">正在流式生成，正文会实时追加...</div>
+      <pre v-if="displayedContent" class="generated-content">{{ displayedContent }}</pre>
       <el-empty v-else description="填写要求并点击生成文章后，这里会显示正文" />
     </section>
 
@@ -163,7 +167,7 @@
           <el-empty v-else :description="debugChunksEmptyText" />
         </el-tab-pane>
         <el-tab-pane label="最终结果">
-          <pre v-if="currentGeneration?.output?.content" class="generated-content">{{ currentGeneration.output.content }}</pre>
+          <pre v-if="displayedContent" class="generated-content">{{ displayedContent }}</pre>
           <el-empty v-else description="还没有生成结果" />
         </el-tab-pane>
       </el-tabs>
@@ -196,7 +200,13 @@ import { Delete, DocumentCopy, Download, EditPen } from '@element-plus/icons-vue
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 
-import { createGeneration, debugRunGeneration, deleteGeneration, fetchGenerations, reviseGeneration } from '@/api/generations'
+import {
+  deleteGeneration,
+  fetchGenerations,
+  streamCreateGeneration,
+  streamDebugRunGeneration,
+  streamReviseGeneration,
+} from '@/api/generations'
 import { useStylesStore } from '@/stores/styles'
 import type { Generation, GenerationCreatePayload, GenerationDebugRunPayload, GenerationRevisePayload, StyleProfile } from '@/types/api'
 
@@ -233,6 +243,7 @@ const operationLoading = ref('')
 const debugRunning = ref(false)
 const generationHistory = ref<Generation[]>([])
 const currentGeneration = ref<Generation | null>(null)
+const streamingContent = ref('')
 const selectingHistory = ref(false)
 const debugSystemPrompt = ref('')
 const debugUserPrompt = ref('')
@@ -263,6 +274,7 @@ watch(
   async (styleId) => {
     if (!selectingHistory.value) {
       currentGeneration.value = null
+      streamingContent.value = ''
     }
     refreshDebugPrompts()
     if (styleId) {
@@ -335,6 +347,8 @@ const retrievalSummaryText = computed(() => {
   return '当前生成记录没有检索策略信息'
 })
 const retrievalAlertType = computed(() => (currentMetadata.value.retrieval_strategy === 'smart_rerank' ? 'success' : 'info'))
+const isStreaming = computed(() => generating.value || Boolean(operationLoading.value) || debugRunning.value)
+const displayedContent = computed(() => streamingContent.value || currentGeneration.value?.output?.content || '')
 const debugStyleProfileText = computed(() => {
   const snapshot = currentMetadata.value.style_profile_snapshot
   if (snapshot && typeof snapshot === 'object') {
@@ -359,6 +373,7 @@ async function handleGenerate() {
   if (!validateBaseForm()) return
 
   generating.value = true
+  let streamErrorShown = false
   try {
     const payload: GenerationCreatePayload = {
       style_category_id: form.styleId,
@@ -371,9 +386,27 @@ async function handleGenerate() {
       include_references: form.includeReferences,
       extra_requirements: form.extraRequirements.trim() || null,
     }
-    currentGeneration.value = await createGeneration(payload)
-    await loadGenerationHistory(form.styleId)
-    ElMessage.success('文章已生成')
+    currentGeneration.value = null
+    streamingContent.value = ''
+    await streamCreateGeneration(payload, {
+      onDelta: (content) => {
+        streamingContent.value += content
+      },
+      onCompleted: async (generation) => {
+        currentGeneration.value = generation
+        streamingContent.value = ''
+        await loadGenerationHistory(form.styleId)
+        ElMessage.success('文章已生成')
+      },
+      onError: (message) => {
+        streamErrorShown = true
+        ElMessage.error(message)
+      },
+    })
+  } catch (error) {
+    if (!streamErrorShown) {
+      ElMessage.error(error instanceof Error ? error.message : '流式生成失败')
+    }
   } finally {
     generating.value = false
   }
@@ -403,6 +436,7 @@ function selectHistory(item: Generation) {
   selectingHistory.value = true
   try {
     currentGeneration.value = item
+    streamingContent.value = ''
     const metadata = item.output?.metadata_json || {}
     form.styleId = item.style_category_id
     form.userInput = typeof metadata.user_input === 'string' ? metadata.user_input : form.userInput
@@ -447,10 +481,29 @@ async function submitRewrite() {
 async function runRevision(payload: GenerationRevisePayload) {
   if (!currentGeneration.value) return
   operationLoading.value = payload.operation_type
+  let streamErrorShown = false
   try {
-    currentGeneration.value = await reviseGeneration(currentGeneration.value.id, payload)
-    await loadGenerationHistory(form.styleId)
-    ElMessage.success(`${formatOperationType(payload.operation_type)}版本已生成`)
+    const sourceId = currentGeneration.value.id
+    streamingContent.value = ''
+    await streamReviseGeneration(sourceId, payload, {
+      onDelta: (content) => {
+        streamingContent.value += content
+      },
+      onCompleted: async (generation) => {
+        currentGeneration.value = generation
+        streamingContent.value = ''
+        await loadGenerationHistory(form.styleId)
+        ElMessage.success(`${formatOperationType(payload.operation_type)}版本已生成`)
+      },
+      onError: (message) => {
+        streamErrorShown = true
+        ElMessage.error(message)
+      },
+    })
+  } catch (error) {
+    if (!streamErrorShown) {
+      ElMessage.error(error instanceof Error ? error.message : '流式改写失败')
+    }
   } finally {
     operationLoading.value = ''
   }
@@ -459,6 +512,7 @@ async function runRevision(payload: GenerationRevisePayload) {
 async function handleDebugRun() {
   if (!form.styleId || !debugSystemPrompt.value.trim() || !debugUserPrompt.value.trim()) return
   debugRunning.value = true
+  let streamErrorShown = false
   try {
     const payload: GenerationDebugRunPayload = {
       style_category_id: form.styleId,
@@ -466,9 +520,26 @@ async function handleDebugRun() {
       user_prompt: debugUserPrompt.value.trim(),
       source_generation_id: currentGeneration.value?.id || null,
     }
-    currentGeneration.value = await debugRunGeneration(payload)
-    await loadGenerationHistory(form.styleId)
-    ElMessage.success('Prompt 调试版本已生成')
+    streamingContent.value = ''
+    await streamDebugRunGeneration(payload, {
+      onDelta: (content) => {
+        streamingContent.value += content
+      },
+      onCompleted: async (generation) => {
+        currentGeneration.value = generation
+        streamingContent.value = ''
+        await loadGenerationHistory(form.styleId)
+        ElMessage.success('Prompt 调试版本已生成')
+      },
+      onError: (message) => {
+        streamErrorShown = true
+        ElMessage.error(message)
+      },
+    })
+  } catch (error) {
+    if (!streamErrorShown) {
+      ElMessage.error(error instanceof Error ? error.message : 'Prompt 调试生成失败')
+    }
   } finally {
     debugRunning.value = false
   }
@@ -493,7 +564,7 @@ async function handleDeleteHistory(item: Generation) {
 }
 
 async function copyResult() {
-  const content = currentGeneration.value?.output?.content
+  const content = displayedContent.value
   if (!content) return
   await navigator.clipboard.writeText(content)
   ElMessage.success('正文已复制')

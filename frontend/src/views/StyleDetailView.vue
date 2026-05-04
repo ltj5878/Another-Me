@@ -47,7 +47,7 @@
         </div>
         <div class="metric">
           <span>处理状态</span>
-          <strong>同步处理</strong>
+          <strong>{{ hasProcessingArticles ? '后台处理中' : '空闲' }}</strong>
         </div>
         <div class="metric">
           <span>写作类型</span>
@@ -66,11 +66,11 @@
           <el-button :icon="EditPen" :disabled="!store.currentProfile" @click="openProfileDialog">编辑画像</el-button>
           <el-button
             type="primary"
-            :loading="store.profileGenerating"
-            :disabled="!store.currentProfile?.can_generate"
+            :loading="store.profileGenerating || isProfileGenerating"
+            :disabled="!store.currentProfile?.can_generate || isProfileGenerating"
             @click="handleGenerateProfile"
           >
-            重新分析风格
+            {{ isProfileGenerating ? '分析中' : '重新分析风格' }}
           </el-button>
         </div>
       </div>
@@ -79,9 +79,19 @@
         <el-tag effect="plain">完成文章 {{ store.currentProfile.completed_article_count }} / {{ store.currentProfile.minimum_required_articles }}</el-tag>
         <el-tag v-if="store.currentProfile.profile" type="success" effect="plain">v{{ store.currentProfile.profile.version }}</el-tag>
         <el-tag v-if="store.currentProfile.is_stale" type="warning" effect="plain">画像可能已过期</el-tag>
+        <el-tag v-if="isProfileGenerating" type="warning" effect="plain">画像分析中</el-tag>
+        <el-tag v-else-if="profileGenerationStatus === 'failed'" type="danger" effect="plain">画像分析失败</el-tag>
         <span v-if="store.currentProfile.profile">更新于 {{ formatDate(store.currentProfile.profile.updated_at) }}</span>
         <span v-else>还没有生成风格画像</span>
       </div>
+
+      <el-alert
+        v-if="profileGenerationStatus === 'failed' && profileGenerationError"
+        class="profile-alert"
+        type="error"
+        :closable="false"
+        :title="profileGenerationError"
+      />
 
       <el-alert
         v-if="store.currentProfile && !store.currentProfile.can_generate"
@@ -277,7 +287,7 @@
 <script setup lang="ts">
 import { Back, Delete, EditPen, UploadFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox, type UploadFile, type UploadInstance } from 'element-plus'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import StyleFormDialog from '@/components/StyleFormDialog.vue'
 import { useStylesStore } from '@/stores/styles'
@@ -293,6 +303,8 @@ const profileDialogOpen = ref(false)
 const submitting = ref(false)
 const activeArticleTab = ref('cleaned')
 const profileCollapseActive = ref(['base', 'deep', 'metrics'])
+const articlePollingTimer = ref<number | null>(null)
+const profilePollingTimer = ref<number | null>(null)
 type ProfileFieldKey = keyof StyleProfilePayload
 interface ProfileFieldConfig {
   key: ProfileFieldKey
@@ -341,9 +353,28 @@ const structureTags = computed(() => {
   const tags = getNested(profileMetrics.value, ['structure', 'tags'])
   return Array.isArray(tags) && tags.length > 0 ? tags.join('、') : '暂无'
 })
+const hasProcessingArticles = computed(() => store.articles.some((article) => isArticleProcessing(article.status)))
+const profileRuntimeJson = computed(() => store.currentProfile?.profile?.profile_json || {})
+const profileGenerationStatus = computed(() => {
+  const status = profileRuntimeJson.value.profile_generation_status
+  return typeof status === 'string' ? status : ''
+})
+const profileGenerationError = computed(() => {
+  const error = profileRuntimeJson.value.profile_generation_error
+  return typeof error === 'string' ? error : ''
+})
+const isProfileGenerating = computed(() => profileGenerationStatus.value === 'running')
 
 onMounted(() => {
-  store.loadStyleDetail(props.id)
+  store.loadStyleDetail(props.id).then(() => {
+    if (hasProcessingArticles.value) startArticlePolling()
+    if (isProfileGenerating.value) startProfilePolling()
+  })
+})
+
+onBeforeUnmount(() => {
+  stopArticlePolling()
+  stopProfilePolling()
 })
 
 watch(
@@ -351,7 +382,12 @@ watch(
   (id) => {
     selectedFile.value = null
     uploadRef.value?.clearFiles()
-    store.loadStyleDetail(id)
+    stopArticlePolling()
+    stopProfilePolling()
+    store.loadStyleDetail(id).then(() => {
+      if (hasProcessingArticles.value) startArticlePolling()
+      if (isProfileGenerating.value) startProfilePolling()
+    })
   },
 )
 
@@ -364,7 +400,8 @@ async function handleUpload() {
   await store.uploadStyleArticle(props.id, selectedFile.value)
   selectedFile.value = null
   uploadRef.value?.clearFiles()
-  ElMessage.success('文章已上传')
+  startArticlePolling()
+  ElMessage.success('文章已上传，正在后台处理')
 }
 
 async function handleUpdateStyle(payload: StyleCreatePayload) {
@@ -410,7 +447,8 @@ async function handleGenerateProfile() {
       })
     }
     await store.regenerateStyleProfile(props.id)
-    ElMessage.success('风格画像已生成')
+    startProfilePolling()
+    ElMessage.success('风格画像分析已开始')
   } catch {
     // User cancelled or API error has been handled globally.
   }
@@ -442,6 +480,50 @@ function emptyProfileForm() {
     },
     {} as Record<ProfileFieldKey, string>,
   )
+}
+
+function startArticlePolling() {
+  if (articlePollingTimer.value !== null) return
+  articlePollingTimer.value = window.setInterval(async () => {
+    await store.loadStyleDetail(props.id)
+    if (!hasProcessingArticles.value) {
+      stopArticlePolling()
+      if (store.articles.some((article) => article.status === 'failed')) {
+        ElMessage.warning('有文章后台处理失败，请查看后端日志')
+      }
+    }
+  }, 2500)
+}
+
+function stopArticlePolling() {
+  if (articlePollingTimer.value === null) return
+  window.clearInterval(articlePollingTimer.value)
+  articlePollingTimer.value = null
+}
+
+function startProfilePolling() {
+  if (profilePollingTimer.value !== null) return
+  profilePollingTimer.value = window.setInterval(async () => {
+    await store.loadStyleProfile(props.id)
+    if (!isProfileGenerating.value) {
+      stopProfilePolling()
+      if (profileGenerationStatus.value === 'failed') {
+        ElMessage.error(profileGenerationError.value || '风格画像分析失败')
+      } else if (profileGenerationStatus.value === 'completed') {
+        ElMessage.success('风格画像分析完成')
+      }
+    }
+  }, 3000)
+}
+
+function stopProfilePolling() {
+  if (profilePollingTimer.value === null) return
+  window.clearInterval(profilePollingTimer.value)
+  profilePollingTimer.value = null
+}
+
+function isArticleProcessing(status: string) {
+  return ['uploaded', 'cleaning', 'chunking', 'embedding', 'analyzing'].includes(status)
 }
 
 function metricValue(section: string, key: string) {
