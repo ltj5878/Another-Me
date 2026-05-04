@@ -61,6 +61,7 @@ Another Me 是一个本地运行的“个人写作风格资料库 + AI 写作生
 │   │   └── services/      # 文章、分块、embedding、检索、画像、生成逻辑
 │   ├── alembic/           # 数据库迁移
 │   ├── sql/               # 数据库初始化 SQL
+│   ├── .env.example       # 后端环境变量示例
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
@@ -70,9 +71,9 @@ Another Me 是一个本地运行的“个人写作风格资料库 + AI 写作生
 │   │   ├── stores/        # Pinia 状态
 │   │   ├── types/         # 共享类型
 │   │   └── views/         # Styles、StyleDetail、Write 页面
+│   ├── .env.example       # 前端环境变量示例
 │   └── package.json
 ├── start.sh               # 一键启动/停止脚本
-├── .env.example           # 环境变量示例
 └── README.md
 ```
 
@@ -108,7 +109,13 @@ brew install pgvector
 
 ## 环境变量
 
-后端读取 `backend/.env`。可以参考 `.env.example` 创建：
+后端读取 `backend/.env`，示例文件放在后端目录内。首次配置可以执行：
+
+```bash
+cp backend/.env.example backend/.env
+```
+
+`backend/.env.example` 内容示例：
 
 ```bash
 DATABASE_URL=postgresql+psycopg://lvtongjie@localhost:5432/vibe_writer
@@ -122,11 +129,23 @@ LLM_MODEL=deepseek-v4-pro
 LLM_TEMPERATURE=0.3
 ```
 
+前端读取 `frontend/.env.local`，示例文件放在前端目录内。首次配置可以执行：
+
+```bash
+cp frontend/.env.example frontend/.env.local
+```
+
+`frontend/.env.example` 内容示例：
+
+```bash
+VITE_API_BASE_URL=http://127.0.0.1:8000
+```
+
 说明：
 
 - 上传文章会立即分块并调用 embedding 服务，因此需要配置 `EMBEDDING_API_KEY`。
 - 生成风格画像和正文需要配置 `LLM_API_KEY`。
-- 前端默认请求 `http://127.0.0.1:8000`。如需覆盖，创建 `frontend/.env.local` 并设置 `VITE_API_BASE_URL=http://127.0.0.1:8000`。
+- 前后端示例文件只提交占位符，不提交真实 API Key。真实密钥只放在本机 `backend/.env`。
 
 ## 数据库迁移
 
