@@ -753,6 +753,11 @@ h2 {
   line-height: 1.75;
 }
 
+.retrieval-alert {
+  margin-bottom: 12px;
+  border-radius: var(--radius-sm);
+}
+
 .debug-chunk-list {
   display: grid;
   gap: 12px;
@@ -771,6 +776,7 @@ h2 {
   display: flex;
   gap: 10px;
   align-items: center;
+  flex-wrap: wrap;
   min-height: 40px;
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
@@ -780,6 +786,15 @@ h2 {
 
 .debug-chunk-item header strong {
   color: var(--accent-strong);
+}
+
+.debug-rerank-reason {
+  margin: 0;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.65;
 }
 
 .debug-chunk-item pre {

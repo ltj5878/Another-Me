@@ -19,9 +19,10 @@ from app.schemas.generation import (
     GenerationRevise,
 )
 from app.schemas.style_profile import PROFILE_FIELD_NAMES
-from app.services.search import search_similar_chunks
+from app.services.search import DISABLED_RETRIEVAL_STRATEGY, smart_search_chunks
 
 REFERENCE_CHUNK_COUNT = 6
+REFERENCE_CANDIDATE_COUNT = 20
 GENERATION_REASONING_EFFORT = "max"
 OPERATION_LABELS = {
     "initial": "初次生成",
@@ -55,7 +56,7 @@ def create_generation(db: Session, payload: GenerationCreate) -> GenerationRead:
 
     style = _get_style_with_profile(db, payload.style_category_id)
     _ensure_llm_configured()
-    references = _maybe_search_references(db, payload.include_references, _generation_search_query(payload), payload.style_category_id)
+    references = _maybe_search_references(db, payload.include_references, _generation_search_query(payload), payload.style_category_id, style.style_profile)
 
     system_prompt = _build_system_prompt()
     user_prompt = _build_user_prompt(style, style.style_profile, payload, references)
@@ -82,6 +83,7 @@ def revise_generation(db: Session, generation_id: UUID, payload: GenerationRevis
         payload.include_references,
         str(source_metadata.get("user_input") or source_output.content[:1200]),
         source_task.style_category_id,
+        style.style_profile,
     )
 
     if payload.operation_type == "regenerate":
@@ -194,11 +196,24 @@ def _ensure_llm_configured() -> None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="LLM_API_KEY 未配置")
 
 
-def _maybe_search_references(db: Session, include_references: bool, query: str, style_id: UUID) -> list:
+def _maybe_search_references(
+    db: Session,
+    include_references: bool,
+    query: str,
+    style_id: UUID,
+    profile: StyleProfile | None,
+) -> list:
     if not include_references:
         return []
     try:
-        return search_similar_chunks(db, query=query, style_category_id=style_id, top_k=REFERENCE_CHUNK_COUNT)
+        return smart_search_chunks(
+            db,
+            query=query,
+            style_category_id=style_id,
+            style_profile=profile,
+            top_k=REFERENCE_CHUNK_COUNT,
+            candidate_k=REFERENCE_CANDIDATE_COUNT,
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"检索参考片段失败：{exc}") from exc
     except Exception as exc:
@@ -433,11 +448,28 @@ def _format_references(references: list) -> str:
     if not references:
         return "没有检索到可用参考片段。"
 
-    blocks = []
-    for index, (chunk, similarity) in enumerate(references, start=1):
+    strategy = _retrieval_strategy(references)
+    intro = (
+        "这些是从语义相关候选片段中经风格重排选出的风格示例片段，主要用于借鉴表达方式，禁止直接复制。"
+        if strategy == "smart_rerank"
+        else "这些是语义相关片段；rerank 不可用时会降级为语义检索，主要作为内容和表达参考，禁止直接复制。"
+    )
+    blocks = [intro]
+    for index, item in enumerate(references, start=1):
+        chunk, similarity = item
         title = chunk.chunk_metadata.get("article_title", "未知文章") if chunk.chunk_metadata else "未知文章"
+        style_score = getattr(item, "style_score", None)
+        semantic_score = getattr(item, "semantic_score", None)
+        reason = (getattr(item, "rerank_reason", None) or "").strip()
+        score_parts = [f"语义相似度 {similarity:.3f}"]
+        if isinstance(style_score, (int, float)):
+            score_parts.append(f"风格分 {style_score:.2f}")
+        if isinstance(semantic_score, (int, float)):
+            score_parts.append(f"语义分 {semantic_score:.2f}")
+        reason_line = f"\n入选原因：{reason}" if reason else ""
         blocks.append(
-            f"【参考片段 {index}｜相似度 {similarity:.3f}｜{title}｜chunk#{chunk.chunk_index + 1}】\n{chunk.content.strip()}"
+            f"【风格示例片段 {index}｜{'｜'.join(score_parts)}｜{title}｜chunk#{chunk.chunk_index + 1}】"
+            f"{reason_line}\n{chunk.content.strip()}"
         )
     return "\n\n".join(blocks)
 
@@ -481,6 +513,7 @@ def _build_metadata(
         "include_references": payload.include_references,
         "extra_requirements": payload.extra_requirements,
         "referenced_chunk_ids": [str(chunk.id) for chunk, _similarity in references],
+        **_retrieval_metadata(payload.include_references, references),
         "retrieved_chunks": _references_metadata(references),
         "style_profile_snapshot": _style_profile_snapshot(profile),
         "system_prompt": system_prompt,
@@ -519,6 +552,7 @@ def _build_revision_metadata(
         "display_title": _build_display_title(source_metadata, operation_label),
         "debug_prompt_modified": False,
         "referenced_chunk_ids": [str(chunk.id) for chunk, _similarity in references],
+        **_retrieval_metadata(payload.include_references, references),
         "retrieved_chunks": _references_metadata(references),
         "style_profile_snapshot": _style_profile_snapshot(profile),
         "system_prompt": system_prompt,
@@ -529,6 +563,58 @@ def _build_revision_metadata(
     }
 
 
+def _retrieval_metadata(include_references: bool, references: list) -> dict:
+    if not include_references:
+        return {
+            "retrieval_strategy": DISABLED_RETRIEVAL_STRATEGY,
+            "candidate_chunk_count": 0,
+            "rerank_model": None,
+            "reranked_chunks": [],
+        }
+    return {
+        "retrieval_strategy": _retrieval_strategy(references),
+        "candidate_chunk_count": _candidate_count(references),
+        "rerank_model": _rerank_model(references),
+        "reranked_chunks": _reranked_metadata(references),
+    }
+
+
+def _retrieval_strategy(references: list) -> str:
+    if not references:
+        return "semantic_fallback"
+    return str(getattr(references[0], "retrieval_strategy", "semantic_fallback"))
+
+
+def _candidate_count(references: list) -> int:
+    if not references:
+        return 0
+    value = getattr(references[0], "candidate_count", 0)
+    return value if isinstance(value, int) else 0
+
+
+def _rerank_model(references: list) -> str | None:
+    if not references:
+        return None
+    value = getattr(references[0], "rerank_model", None)
+    return value if isinstance(value, str) else None
+
+
+def _reranked_metadata(references: list) -> list[dict]:
+    return [
+        {
+            "id": str(item.chunk.id),
+            "source_article_id": str(item.chunk.source_article_id),
+            "chunk_index": item.chunk.chunk_index,
+            "similarity": float(item.similarity),
+            "style_score": getattr(item, "style_score", None),
+            "semantic_score": getattr(item, "semantic_score", None),
+            "reason": getattr(item, "rerank_reason", None),
+            "retrieval_strategy": getattr(item, "retrieval_strategy", "semantic_fallback"),
+        }
+        for item in references
+    ]
+
+
 def _references_metadata(references: list) -> list[dict]:
     return [
         {
@@ -536,10 +622,15 @@ def _references_metadata(references: list) -> list[dict]:
             "source_article_id": str(chunk.source_article_id),
             "chunk_index": chunk.chunk_index,
             "similarity": float(similarity),
+            "style_score": getattr(item, "style_score", None),
+            "semantic_score": getattr(item, "semantic_score", None),
+            "rerank_reason": getattr(item, "rerank_reason", None),
+            "retrieval_strategy": getattr(item, "retrieval_strategy", "semantic_fallback"),
             "content": chunk.content,
             "metadata": chunk.chunk_metadata or {},
         }
-        for chunk, similarity in references
+        for item in references
+        for chunk, similarity in [item]
     ]
 
 

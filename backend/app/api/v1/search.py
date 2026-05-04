@@ -7,7 +7,7 @@ from app.core.config import settings
 from app.db.session import get_db
 from app.models.style import StyleCategory
 from app.schemas.article import ArticleChunkRead, ChunkSearchRequest, ChunkSearchResult
-from app.services.search import search_similar_chunks
+from app.services.search import search_similar_chunks, smart_search_chunks
 
 router = APIRouter()
 
@@ -30,17 +30,32 @@ def search_chunks(
             detail="Style category not found",
         )
 
-    results = search_similar_chunks(
-        db=db,
-        query=payload.query,
-        style_category_id=payload.style_category_id,
-        top_k=payload.top_k,
-    )
+    if payload.rerank:
+        results = smart_search_chunks(
+            db=db,
+            query=payload.query,
+            style_category_id=payload.style_category_id,
+            style_profile=style.style_profile,
+            top_k=payload.top_k,
+            candidate_k=payload.candidate_k,
+        )
+    else:
+        results = search_similar_chunks(
+            db=db,
+            query=payload.query,
+            style_category_id=payload.style_category_id,
+            top_k=payload.top_k,
+        )
 
     return [
         ChunkSearchResult(
             chunk=ArticleChunkRead.model_validate(chunk),
             similarity=round(sim, 4),
+            style_score=getattr(item, "style_score", None),
+            semantic_score=getattr(item, "semantic_score", None),
+            rerank_reason=getattr(item, "rerank_reason", None),
+            retrieval_strategy=getattr(item, "retrieval_strategy", None),
         )
-        for chunk, sim in results
+        for item in results
+        for chunk, sim in [item]
     ]

@@ -140,12 +140,23 @@
           <pre class="prompt-preview">{{ debugStyleProfileText }}</pre>
         </el-tab-pane>
         <el-tab-pane :label="`检索片段 (${debugRetrievedChunks.length})`">
+          <el-alert
+            v-if="currentGeneration"
+            class="retrieval-alert"
+            :type="retrievalAlertType"
+            :closable="false"
+            :title="retrievalSummaryText"
+          />
           <div v-if="debugRetrievedChunks.length > 0" class="debug-chunk-list">
             <article v-for="chunk in debugRetrievedChunks" :key="chunk.id || chunk.chunk_index" class="debug-chunk-item">
               <header>
                 <strong>#{{ Number(chunk.chunk_index ?? 0) + 1 }}</strong>
                 <span v-if="typeof chunk.similarity === 'number'">相似度 {{ chunk.similarity.toFixed(3) }}</span>
+                <span v-if="typeof chunk.style_score === 'number'">风格分 {{ chunk.style_score.toFixed(2) }}</span>
+                <span v-if="typeof chunk.semantic_score === 'number'">语义分 {{ chunk.semantic_score.toFixed(2) }}</span>
+                <el-tag v-if="chunk.retrieval_strategy" effect="plain" size="small">{{ formatRetrievalStrategy(chunk.retrieval_strategy) }}</el-tag>
               </header>
+              <p v-if="chunk.rerank_reason" class="debug-rerank-reason">{{ chunk.rerank_reason }}</p>
               <pre>{{ chunk.content }}</pre>
             </article>
           </div>
@@ -193,6 +204,10 @@ interface DebugChunk {
   id?: string
   chunk_index?: number
   similarity?: number
+  style_score?: number | null
+  semantic_score?: number | null
+  rerank_reason?: string | null
+  retrieval_strategy?: string | null
   content?: string
 }
 
@@ -308,6 +323,18 @@ const debugChunksEmptyText = computed(() => {
   if (currentMetadata.value.include_references === false) return '本次生成未开启“引用旧文片段”，所以没有检索片段'
   return '本次生成没有检索到可用片段'
 })
+const retrievalSummaryText = computed(() => {
+  const strategy = currentMetadata.value.retrieval_strategy
+  if (strategy === 'smart_rerank') {
+    return `Smart Retrieval：已从 ${currentMetadata.value.candidate_chunk_count || debugRetrievedChunks.value.length} 个语义候选中重排出 ${debugRetrievedChunks.value.length} 个风格示例片段`
+  }
+  if (strategy === 'semantic_fallback') {
+    return `已降级为语义检索：当前展示 ${debugRetrievedChunks.value.length} 个语义相关片段`
+  }
+  if (strategy === 'disabled') return '本次生成未开启旧文片段引用'
+  return '当前生成记录没有检索策略信息'
+})
+const retrievalAlertType = computed(() => (currentMetadata.value.retrieval_strategy === 'smart_rerank' ? 'success' : 'info'))
 const debugStyleProfileText = computed(() => {
   const snapshot = currentMetadata.value.style_profile_snapshot
   if (snapshot && typeof snapshot === 'object') {
@@ -552,6 +579,15 @@ function formatProfile(profile: StyleProfile | null) {
     `结构模板：${profile.structure_template || '未填写'}`,
     `风格约束：${profile.style_constraints || '未填写'}`,
   ].join('\n')
+}
+
+function formatRetrievalStrategy(value: string) {
+  const labels: Record<string, string> = {
+    smart_rerank: '风格重排',
+    semantic_fallback: '语义降级',
+    disabled: '未检索',
+  }
+  return labels[value] || value
 }
 
 function formatHistoryTitle(item: Generation) {

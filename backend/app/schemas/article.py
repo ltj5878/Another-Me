@@ -40,9 +40,15 @@ class ArticleChunkRead(BaseModel):
 class ChunkSearchResult(BaseModel):
     chunk: ArticleChunkRead
     similarity: float
+    style_score: float | None = None
+    semantic_score: float | None = None
+    rerank_reason: str | None = None
+    retrieval_strategy: str | None = None
 
 
 class ChunkSearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=2000)
     top_k: int = Field(default=5, ge=1, le=50)
+    candidate_k: int = Field(default=20, ge=1, le=50)
+    rerank: bool = False
     style_category_id: UUID
