@@ -424,23 +424,62 @@ h2 {
 }
 
 .profile-collapse :deep(.el-collapse-item__header) {
-  padding: 0 16px;
+  min-height: 62px;
+  height: auto;
+  padding: 10px 16px;
   color: var(--text);
-  font-weight: 700;
+}
+
+.profile-collapse :deep(.el-collapse-item__arrow) {
+  margin-left: 12px;
 }
 
 .profile-collapse :deep(.el-collapse-item__content) {
   padding: 14px 16px 18px;
 }
 
+.collapse-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-width: 0;
+  gap: 16px;
+}
+
+.collapse-heading-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
 .collapse-title {
-  margin-right: 10px;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 750;
+  line-height: 1.25;
 }
 
 .collapse-subtitle {
+  overflow: hidden;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 400;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collapse-kicker {
+  flex: 0 0 auto;
+  padding: 4px 9px;
+  border: 1px solid #d8dde6;
+  border-radius: 999px;
+  background: #f7f9fb;
+  color: #5d6878;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1;
 }
 
 .metrics-grid {
