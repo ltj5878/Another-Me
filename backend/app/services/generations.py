@@ -1,5 +1,7 @@
 import json
 from collections.abc import Iterator
+from queue import SimpleQueue
+from threading import Thread
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -8,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import settings
+from app.db.session import SessionLocal
 from app.models.generation import GeneratedOutput, GenerationTask
 from app.models.style import StyleCategory, StyleProfile
 from app.schemas.generation import (
@@ -358,39 +361,82 @@ def _run_and_stream_generation(
     db.commit()
     db.refresh(task)
 
+    events: SimpleQueue[tuple[str, dict] | None] = SimpleQueue()
+    worker = Thread(
+        target=_stream_generation_worker,
+        args=(task.id, system_prompt, user_prompt, metadata, events),
+        daemon=True,
+    )
+    worker.start()
+
     yield _sse_event("started", {
         "generation_id": str(task.id),
         "style_category_id": str(style_id),
         "metadata": metadata,
     })
 
+    while True:
+        item = events.get()
+        if item is None:
+            break
+        event, data = item
+        yield _sse_event(event, data)
+
+
+def _stream_generation_worker(
+    task_id: UUID,
+    system_prompt: str,
+    user_prompt: str,
+    metadata: dict,
+    events: SimpleQueue[tuple[str, dict] | None],
+) -> None:
     content_parts: list[str] = []
+    thinking_emitted = False
     try:
-        for delta in _call_deepseek_stream(system_prompt, user_prompt):
-            if not delta:
+        for event_type, text in _call_deepseek_stream(system_prompt, user_prompt):
+            if event_type == "progress" and not thinking_emitted:
+                thinking_emitted = True
+                events.put(("progress", {"detail": "DeepSeek 正在思考，正文开始生成后会实时显示..."}))
                 continue
-            content_parts.append(delta)
-            yield _sse_event("delta", {"content": delta})
+            if event_type != "delta" or not text:
+                continue
+            content_parts.append(text)
+            events.put(("delta", {"content": text}))
     except Exception as exc:
-        task.status = "failed"
-        db.add(GeneratedOutput(generation_task_id=task.id, content="", metadata_json={**metadata, "error": str(exc)}))
-        db.commit()
-        yield _sse_event("error", {"generation_id": str(task.id), "detail": f"文章生成失败：{exc}"})
+        _save_stream_failure(task_id, metadata, str(exc))
+        events.put(("error", {"generation_id": str(task_id), "detail": f"文章生成失败：{exc}"}))
+        events.put(None)
         return
 
     content = "".join(content_parts).strip()
     if not content:
-        task.status = "failed"
-        db.add(GeneratedOutput(generation_task_id=task.id, content="", metadata_json={**metadata, "error": "DeepSeek 没有返回正文"}))
-        db.commit()
-        yield _sse_event("error", {"generation_id": str(task.id), "detail": "文章生成失败：DeepSeek 没有返回正文"})
+        _save_stream_failure(task_id, metadata, "DeepSeek 没有返回正文")
+        events.put(("error", {"generation_id": str(task_id), "detail": "文章生成失败：DeepSeek 没有返回正文"}))
+        events.put(None)
         return
 
-    task.status = "completed"
-    db.add(GeneratedOutput(generation_task_id=task.id, content=content, metadata_json=metadata))
-    db.commit()
-    completed = get_generation(db, task.id)
-    yield _sse_event("completed", completed.model_dump(mode="json"))
+    with SessionLocal() as worker_db:
+        task = worker_db.get(GenerationTask, task_id)
+        if task is None:
+            events.put(("error", {"generation_id": str(task_id), "detail": "生成任务不存在"}))
+            events.put(None)
+            return
+        task.status = "completed"
+        worker_db.add(GeneratedOutput(generation_task_id=task.id, content=content, metadata_json=metadata))
+        worker_db.commit()
+        completed = get_generation(worker_db, task.id)
+    events.put(("completed", completed.model_dump(mode="json")))
+    events.put(None)
+
+
+def _save_stream_failure(task_id: UUID, metadata: dict, error: str) -> None:
+    with SessionLocal() as worker_db:
+        task = worker_db.get(GenerationTask, task_id)
+        if task is None:
+            return
+        task.status = "failed"
+        worker_db.add(GeneratedOutput(generation_task_id=task.id, content="", metadata_json={**metadata, "error": error}))
+        worker_db.commit()
 
 
 def _latest_output(task: GenerationTask | None) -> GeneratedOutput | None:
@@ -818,7 +864,7 @@ def _call_deepseek(system_prompt: str, user_prompt: str) -> str:
     return content.strip()
 
 
-def _call_deepseek_stream(system_prompt: str, user_prompt: str) -> Iterator[str]:
+def _call_deepseek_stream(system_prompt: str, user_prompt: str) -> Iterator[tuple[str, str]]:
     client = OpenAI(api_key=settings.llm_api_key, base_url=settings.llm_base_url)
     response = client.chat.completions.create(
         model=settings.llm_model,
@@ -834,9 +880,12 @@ def _call_deepseek_stream(system_prompt: str, user_prompt: str) -> Iterator[str]
         if not chunk.choices:
             continue
         delta = chunk.choices[0].delta
+        reasoning_content = getattr(delta, "reasoning_content", None) or ""
+        if reasoning_content:
+            yield ("progress", "")
         content = getattr(delta, "content", None) or ""
         if content:
-            yield content
+            yield ("delta", content)
 
 
 def _sse_event(event: str, data: dict) -> str:

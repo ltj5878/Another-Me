@@ -117,7 +117,7 @@
         </el-button>
       </div>
 
-      <div v-if="isStreaming" class="stream-status">正在流式生成，正文会实时追加...</div>
+      <div v-if="isStreaming" class="stream-status">{{ streamingStatus }}</div>
       <pre v-if="displayedContent" class="generated-content">{{ displayedContent }}</pre>
       <el-empty v-else description="填写要求并点击生成文章后，这里会显示正文" />
     </section>
@@ -202,6 +202,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import {
   deleteGeneration,
+  fetchGeneration,
   fetchGenerations,
   streamCreateGeneration,
   streamDebugRunGeneration,
@@ -244,6 +245,7 @@ const debugRunning = ref(false)
 const generationHistory = ref<Generation[]>([])
 const currentGeneration = ref<Generation | null>(null)
 const streamingContent = ref('')
+const streamingStatus = ref('正在连接生成服务...')
 const selectingHistory = ref(false)
 const debugSystemPrompt = ref('')
 const debugUserPrompt = ref('')
@@ -275,6 +277,7 @@ watch(
     if (!selectingHistory.value) {
       currentGeneration.value = null
       streamingContent.value = ''
+      streamingStatus.value = '正在连接生成服务...'
     }
     refreshDebugPrompts()
     if (styleId) {
@@ -388,8 +391,13 @@ async function handleGenerate() {
     }
     currentGeneration.value = null
     streamingContent.value = ''
+    streamingStatus.value = '正在连接生成服务...'
     await streamCreateGeneration(payload, {
+      onProgress: (message) => {
+        streamingStatus.value = message
+      },
       onDelta: (content) => {
+        streamingStatus.value = '正在流式输出正文...'
         streamingContent.value += content
       },
       onCompleted: async (generation) => {
@@ -432,13 +440,15 @@ function validateBaseForm() {
   return true
 }
 
-function selectHistory(item: Generation) {
+async function selectHistory(item: Generation) {
   selectingHistory.value = true
   try {
-    currentGeneration.value = item
+    const latest = await fetchGeneration(item.id)
+    currentGeneration.value = latest
     streamingContent.value = ''
-    const metadata = item.output?.metadata_json || {}
-    form.styleId = item.style_category_id
+    streamingStatus.value = '正在连接生成服务...'
+    const metadata = latest.output?.metadata_json || {}
+    form.styleId = latest.style_category_id
     form.userInput = typeof metadata.user_input === 'string' ? metadata.user_input : form.userInput
     form.writingType = typeof metadata.writing_type === 'string' ? metadata.writing_type : form.writingType
     form.customWritingType = typeof metadata.custom_writing_type === 'string' ? metadata.custom_writing_type : ''
@@ -485,8 +495,13 @@ async function runRevision(payload: GenerationRevisePayload) {
   try {
     const sourceId = currentGeneration.value.id
     streamingContent.value = ''
+    streamingStatus.value = '正在连接生成服务...'
     await streamReviseGeneration(sourceId, payload, {
+      onProgress: (message) => {
+        streamingStatus.value = message
+      },
       onDelta: (content) => {
+        streamingStatus.value = '正在流式输出正文...'
         streamingContent.value += content
       },
       onCompleted: async (generation) => {
@@ -521,8 +536,13 @@ async function handleDebugRun() {
       source_generation_id: currentGeneration.value?.id || null,
     }
     streamingContent.value = ''
+    streamingStatus.value = '正在连接生成服务...'
     await streamDebugRunGeneration(payload, {
+      onProgress: (message) => {
+        streamingStatus.value = message
+      },
       onDelta: (content) => {
+        streamingStatus.value = '正在流式输出正文...'
         streamingContent.value += content
       },
       onCompleted: async (generation) => {

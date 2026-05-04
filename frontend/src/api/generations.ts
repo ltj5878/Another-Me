@@ -3,6 +3,7 @@ import type { Generation, GenerationCreatePayload, GenerationDebugRunPayload, Ge
 
 interface GenerationStreamHandlers {
   onStarted?: (payload: { generation_id: string; style_category_id: string; metadata: Record<string, unknown> }) => void
+  onProgress?: (message: string) => void
   onDelta?: (content: string) => void
   onCompleted?: (generation: Generation) => void | Promise<void>
   onError?: (message: string) => void
@@ -113,6 +114,8 @@ async function handleSseEvent(eventText: string, handlers: GenerationStreamHandl
 
   if (event === 'started') {
     handlers.onStarted?.(payload)
+  } else if (event === 'progress') {
+    handlers.onProgress?.(typeof payload.detail === 'string' ? payload.detail : '生成中...')
   } else if (event === 'delta') {
     handlers.onDelta?.(typeof payload.content === 'string' ? payload.content : '')
   } else if (event === 'completed') {
