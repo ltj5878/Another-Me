@@ -417,34 +417,30 @@ h2 {
   word-break: break-word;
 }
 
-.deep-profile-section {
-  margin-top: 18px;
-}
-
-.section-title-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.section-title-row h3 {
-  margin: 0;
-  color: var(--text);
-  font-size: 15px;
-}
-
-.section-title-row span {
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.metrics-collapse {
-  margin-top: 18px;
+.profile-collapse {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   overflow: hidden;
+}
+
+.profile-collapse :deep(.el-collapse-item__header) {
+  padding: 0 16px;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.profile-collapse :deep(.el-collapse-item__content) {
+  padding: 14px 16px 18px;
+}
+
+.collapse-title {
+  margin-right: 10px;
+}
+
+.collapse-subtitle {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
 }
 
 .metrics-grid {

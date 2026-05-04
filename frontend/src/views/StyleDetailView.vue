@@ -92,28 +92,30 @@
       />
 
       <template v-if="store.currentProfile?.profile">
-        <div class="profile-grid">
-          <article v-for="field in baseProfileFields" :key="field.key" class="profile-field" :class="{ 'profile-field-wide': field.wide }">
-            <h3>{{ field.label }}</h3>
-            <p>{{ formatProfileValue(store.currentProfile.profile[field.key]) }}</p>
-          </article>
-        </div>
+        <el-collapse v-model="profileCollapseActive" class="profile-collapse">
+          <el-collapse-item title="风格画像" name="base">
+            <div class="profile-grid">
+              <article v-for="field in baseProfileFields" :key="field.key" class="profile-field" :class="{ 'profile-field-wide': field.wide }">
+                <h3>{{ field.label }}</h3>
+                <p>{{ formatProfileValue(store.currentProfile.profile[field.key]) }}</p>
+              </article>
+            </div>
+          </el-collapse-item>
 
-        <div class="deep-profile-section">
-          <div class="section-title-row">
-            <h3>深度分析</h3>
-            <span>句法、标点、词汇和结构会作为写文章时的软约束。</span>
-          </div>
-          <div class="profile-grid">
-            <article v-for="field in deepProfileFields" :key="field.key" class="profile-field" :class="{ 'profile-field-wide': field.wide }">
-              <h3>{{ field.label }}</h3>
-              <p>{{ formatProfileValue(store.currentProfile.profile[field.key]) }}</p>
-            </article>
-          </div>
-        </div>
+          <el-collapse-item name="deep">
+            <template #title>
+              <span class="collapse-title">深度分析</span>
+              <span class="collapse-subtitle">句法、标点、词汇和结构会作为写文章时的软约束。</span>
+            </template>
+            <div class="profile-grid">
+              <article v-for="field in deepProfileFields" :key="field.key" class="profile-field" :class="{ 'profile-field-wide': field.wide }">
+                <h3>{{ field.label }}</h3>
+                <p>{{ formatProfileValue(store.currentProfile.profile[field.key]) }}</p>
+              </article>
+            </div>
+          </el-collapse-item>
 
-        <el-collapse v-if="hasMetrics" class="metrics-collapse">
-          <el-collapse-item title="量化指标" name="metrics">
+          <el-collapse-item v-if="hasMetrics" title="量化指标" name="metrics">
             <div class="metrics-grid">
               <article class="metric-card">
                 <h4>句法指纹</h4>
@@ -267,6 +269,7 @@ const articleDialogOpen = ref(false)
 const profileDialogOpen = ref(false)
 const submitting = ref(false)
 const activeArticleTab = ref('cleaned')
+const profileCollapseActive = ref(['base', 'deep', 'metrics'])
 type ProfileFieldKey = keyof StyleProfilePayload
 interface ProfileFieldConfig {
   key: ProfileFieldKey
