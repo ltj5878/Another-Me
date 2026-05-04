@@ -154,8 +154,8 @@ VITE_API_BASE_URL=http://127.0.0.1:8000
 ```bash
 cd backend
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/alembic upgrade head
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m alembic upgrade head
 ```
 
 如果需要直接用 SQL 建库建表，也可以在项目根目录执行：
@@ -213,9 +213,9 @@ logs/frontend.log
 ```bash
 cd backend
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/alembic upgrade head
-.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m alembic upgrade head
+.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 前端：

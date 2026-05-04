@@ -49,10 +49,10 @@ service_running() {
 
 ensure_backend_deps() {
   local stamp="$BACKEND_DIR/.venv/.requirements.stamp"
-  if [[ ! -x "$BACKEND_DIR/.venv/bin/uvicorn" || "$BACKEND_DIR/requirements.txt" -nt "$stamp" ]]; then
+  if [[ ! -x "$BACKEND_DIR/.venv/bin/python" || "$BACKEND_DIR/requirements.txt" -nt "$stamp" ]]; then
     echo "Installing backend dependencies..."
     python3 -m venv "$BACKEND_DIR/.venv"
-    "$BACKEND_DIR/.venv/bin/pip" install -r "$BACKEND_DIR/requirements.txt"
+    "$BACKEND_DIR/.venv/bin/python" -m pip install -r "$BACKEND_DIR/requirements.txt"
     touch "$stamp"
   fi
 }
@@ -76,7 +76,7 @@ start_backend() {
   echo "Starting backend on http://$BACKEND_HOST:$BACKEND_PORT"
   (
     cd "$BACKEND_DIR"
-    nohup .venv/bin/uvicorn app.main:app --host "$BACKEND_HOST" --port "$BACKEND_PORT" --reload > "$BACKEND_LOG" 2>&1 &
+    nohup .venv/bin/python -m uvicorn app.main:app --host "$BACKEND_HOST" --port "$BACKEND_PORT" --reload > "$BACKEND_LOG" 2>&1 &
     echo $! > "$BACKEND_PID_FILE"
   )
 }
