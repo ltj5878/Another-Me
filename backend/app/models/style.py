@@ -44,6 +44,11 @@ class StyleProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     do_rules: Mapped[str | None] = mapped_column(Text)
     dont_rules: Mapped[str | None] = mapped_column(Text)
     prompt_instruction: Mapped[str | None] = mapped_column(Text)
+    syntax_fingerprint: Mapped[str | None] = mapped_column(Text)
+    punctuation_fingerprint: Mapped[str | None] = mapped_column(Text)
+    preferred_words: Mapped[str | None] = mapped_column(Text)
+    structure_template: Mapped[str | None] = mapped_column(Text)
+    style_constraints: Mapped[str | None] = mapped_column(Text)
     version: Mapped[int] = mapped_column(Integer, default=1)
 
     style_category: Mapped[StyleCategory] = relationship(back_populates="style_profile")

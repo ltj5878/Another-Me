@@ -8,6 +8,7 @@ import {
   fetchArticles,
   fetchStyle,
   fetchStyleProfile,
+  fetchStyleProfileMetrics,
   fetchStyles,
   generateStyleProfile,
   updateStyle,
@@ -19,6 +20,7 @@ import type {
   SourceArticleDetail,
   StyleCategory,
   StyleCreatePayload,
+  StyleProfileMetrics,
   StyleProfilePayload,
   StyleProfileStatus,
   StyleUpdatePayload,
@@ -30,6 +32,7 @@ interface StylesState {
   articles: SourceArticle[]
   currentArticle: SourceArticleDetail | null
   currentProfile: StyleProfileStatus | null
+  currentProfileMetrics: StyleProfileMetrics | null
   loading: boolean
   articleLoading: boolean
   articleDetailLoading: boolean
@@ -44,6 +47,7 @@ export const useStylesStore = defineStore('styles', {
     articles: [],
     currentArticle: null,
     currentProfile: null,
+    currentProfileMetrics: null,
     loading: false,
     articleLoading: false,
     articleDetailLoading: false,
@@ -83,14 +87,21 @@ export const useStylesStore = defineStore('styles', {
         this.currentStyle.article_count -= 1
       }
       this.currentProfile = await fetchStyleProfile(styleId)
+      this.currentProfileMetrics = await fetchStyleProfileMetrics(styleId)
     },
     async loadStyleDetail(id: string) {
       this.loading = true
       try {
-        const [style, articles, profile] = await Promise.all([fetchStyle(id), fetchArticles(id), fetchStyleProfile(id)])
+        const [style, articles, profile, profileMetrics] = await Promise.all([
+          fetchStyle(id),
+          fetchArticles(id),
+          fetchStyleProfile(id),
+          fetchStyleProfileMetrics(id),
+        ])
         this.currentStyle = style
         this.articles = articles
         this.currentProfile = profile
+        this.currentProfileMetrics = profileMetrics
         this.currentArticle = null
       } finally {
         this.loading = false
@@ -105,6 +116,7 @@ export const useStylesStore = defineStore('styles', {
           this.currentStyle.article_count += 1
         }
         this.currentProfile = await fetchStyleProfile(styleId)
+        this.currentProfileMetrics = await fetchStyleProfileMetrics(styleId)
       } finally {
         this.articleLoading = false
       }
@@ -121,7 +133,9 @@ export const useStylesStore = defineStore('styles', {
     async loadStyleProfile(styleId: string) {
       this.profileLoading = true
       try {
-        this.currentProfile = await fetchStyleProfile(styleId)
+        const [profile, profileMetrics] = await Promise.all([fetchStyleProfile(styleId), fetchStyleProfileMetrics(styleId)])
+        this.currentProfile = profile
+        this.currentProfileMetrics = profileMetrics
         return this.currentProfile
       } finally {
         this.profileLoading = false
@@ -131,6 +145,7 @@ export const useStylesStore = defineStore('styles', {
       this.profileGenerating = true
       try {
         this.currentProfile = await generateStyleProfile(styleId)
+        this.currentProfileMetrics = await fetchStyleProfileMetrics(styleId)
         return this.currentProfile
       } finally {
         this.profileGenerating = false
@@ -140,6 +155,7 @@ export const useStylesStore = defineStore('styles', {
       this.profileLoading = true
       try {
         this.currentProfile = await updateStyleProfile(styleId, payload)
+        this.currentProfileMetrics = await fetchStyleProfileMetrics(styleId)
         return this.currentProfile
       } finally {
         this.profileLoading = false

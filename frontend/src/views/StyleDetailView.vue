@@ -91,12 +91,62 @@
         :title="`至少需要 ${store.currentProfile.minimum_required_articles} 篇 completed 文章才能生成画像`"
       />
 
-      <div v-if="store.currentProfile?.profile" class="profile-grid">
-        <article v-for="field in profileFields" :key="field.key" class="profile-field" :class="{ 'profile-field-wide': field.wide }">
-          <h3>{{ field.label }}</h3>
-          <p>{{ formatProfileValue(store.currentProfile.profile[field.key]) }}</p>
-        </article>
-      </div>
+      <template v-if="store.currentProfile?.profile">
+        <div class="profile-grid">
+          <article v-for="field in baseProfileFields" :key="field.key" class="profile-field" :class="{ 'profile-field-wide': field.wide }">
+            <h3>{{ field.label }}</h3>
+            <p>{{ formatProfileValue(store.currentProfile.profile[field.key]) }}</p>
+          </article>
+        </div>
+
+        <div class="deep-profile-section">
+          <div class="section-title-row">
+            <h3>深度分析</h3>
+            <span>句法、标点、词汇和结构会作为写文章时的软约束。</span>
+          </div>
+          <div class="profile-grid">
+            <article v-for="field in deepProfileFields" :key="field.key" class="profile-field" :class="{ 'profile-field-wide': field.wide }">
+              <h3>{{ field.label }}</h3>
+              <p>{{ formatProfileValue(store.currentProfile.profile[field.key]) }}</p>
+            </article>
+          </div>
+        </div>
+
+        <el-collapse v-if="hasMetrics" class="metrics-collapse">
+          <el-collapse-item title="量化指标" name="metrics">
+            <div class="metrics-grid">
+              <article class="metric-card">
+                <h4>句法指纹</h4>
+                <p>平均句长：{{ metricValue('syntax', 'avg_sentence_length') }}</p>
+                <p>中位句长：{{ metricValue('syntax', 'median_sentence_length') }}</p>
+                <p>短句比例：{{ metricRatio('syntax', 'short_sentence_ratio') }}</p>
+                <p>长句比例：{{ metricRatio('syntax', 'long_sentence_ratio') }}</p>
+              </article>
+              <article class="metric-card">
+                <h4>标点习惯</h4>
+                <p>主要标点：{{ dominantMarks }}</p>
+                <p>逗号/千字：{{ punctuationPerThousand('comma') }}</p>
+                <p>问号/千字：{{ punctuationPerThousand('question') }}</p>
+                <p>破折号/千字：{{ punctuationPerThousand('dash') }}</p>
+              </article>
+              <article class="metric-card">
+                <h4>段落结构</h4>
+                <p>平均段长：{{ metricValue('paragraphs', 'avg_paragraph_length') }}</p>
+                <p>短段比例：{{ metricRatio('paragraphs', 'short_paragraph_ratio') }}</p>
+                <p>长段比例：{{ metricRatio('paragraphs', 'long_paragraph_ratio') }}</p>
+                <p>开头段均长：{{ metricValue('paragraphs', 'opening_avg_length') }}</p>
+              </article>
+              <article class="metric-card metric-card-wide">
+                <h4>词汇偏好</h4>
+                <p>高频词：{{ topMetricItems('top_words') }}</p>
+                <p>连接词：{{ topMetricItems('connectors') }}</p>
+                <p>个人化短语：{{ topMetricItems('private_phrases') }}</p>
+                <p>结构标签：{{ structureTags }}</p>
+              </article>
+            </div>
+          </el-collapse-item>
+        </el-collapse>
+      </template>
       <el-empty v-else description="上传至少 3 篇文章后，可以重新分析并生成风格画像" />
     </section>
 
@@ -202,7 +252,7 @@
 <script setup lang="ts">
 import { Back, Delete, EditPen, UploadFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox, type UploadFile, type UploadInstance } from 'element-plus'
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import StyleFormDialog from '@/components/StyleFormDialog.vue'
 import { useStylesStore } from '@/stores/styles'
@@ -225,7 +275,7 @@ interface ProfileFieldConfig {
   rows?: number
 }
 
-const profileFields: ProfileFieldConfig[] = [
+const baseProfileFields: ProfileFieldConfig[] = [
   { key: 'summary', label: '总体风格描述', wide: true, rows: 4 },
   { key: 'sentence_style', label: '句式特点' },
   { key: 'structure_style', label: '段落结构' },
@@ -240,7 +290,31 @@ const profileFields: ProfileFieldConfig[] = [
   { key: 'dont_rules', label: '禁止事项', wide: true, rows: 4 },
   { key: 'prompt_instruction', label: '模仿指令', wide: true, rows: 5 },
 ]
+const deepProfileFields: ProfileFieldConfig[] = [
+  { key: 'syntax_fingerprint', label: '句法指纹', rows: 4 },
+  { key: 'punctuation_fingerprint', label: '标点习惯', rows: 4 },
+  { key: 'preferred_words', label: '词汇偏好库', wide: true, rows: 4 },
+  { key: 'structure_template', label: '结构模板', wide: true, rows: 4 },
+  { key: 'style_constraints', label: '风格约束', wide: true, rows: 4 },
+]
+const profileFields: ProfileFieldConfig[] = [...baseProfileFields, ...deepProfileFields]
 const profileForm = ref<Record<ProfileFieldKey, string>>(emptyProfileForm())
+
+const profileMetrics = computed<Record<string, unknown>>(() => {
+  const loaded = store.currentProfileMetrics?.metrics
+  if (loaded && Object.keys(loaded).length > 0) return loaded
+  const fromProfile = store.currentProfile?.profile?.profile_json?.deep_metrics
+  return isRecord(fromProfile) ? fromProfile : {}
+})
+const hasMetrics = computed(() => Object.keys(profileMetrics.value).length > 0)
+const dominantMarks = computed(() => {
+  const marks = getNested(profileMetrics.value, ['punctuation', 'dominant_marks'])
+  return Array.isArray(marks) && marks.length > 0 ? marks.join('、') : '暂无'
+})
+const structureTags = computed(() => {
+  const tags = getNested(profileMetrics.value, ['structure', 'tags'])
+  return Array.isArray(tags) && tags.length > 0 ? tags.join('、') : '暂无'
+})
 
 onMounted(() => {
   store.loadStyleDetail(props.id)
@@ -342,6 +416,39 @@ function emptyProfileForm() {
     },
     {} as Record<ProfileFieldKey, string>,
   )
+}
+
+function metricValue(section: string, key: string) {
+  const value = getNested(profileMetrics.value, [section, key])
+  return typeof value === 'number' ? value : '暂无'
+}
+
+function metricRatio(section: string, key: string) {
+  const value = getNested(profileMetrics.value, [section, key])
+  return typeof value === 'number' ? `${(value * 100).toFixed(1)}%` : '暂无'
+}
+
+function punctuationPerThousand(key: string) {
+  const value = getNested(profileMetrics.value, ['punctuation', 'per_1000_chars', key])
+  return typeof value === 'number' ? value : '暂无'
+}
+
+function topMetricItems(key: string) {
+  const items = getNested(profileMetrics.value, ['vocabulary', key])
+  if (!Array.isArray(items) || items.length === 0) return '暂无'
+  return items
+    .slice(0, 12)
+    .map((item) => (isRecord(item) ? `${item.text}${typeof item.count === 'number' ? `(${item.count})` : ''}` : ''))
+    .filter(Boolean)
+    .join('、')
+}
+
+function getNested(source: unknown, path: string[]) {
+  return path.reduce<unknown>((current, key) => (isRecord(current) ? current[key] : undefined), source)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
 }
 
 function formatProfileValue(value: string | null | undefined) {

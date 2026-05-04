@@ -63,9 +63,19 @@ export interface StyleProfile {
   do_rules: string | null
   dont_rules: string | null
   prompt_instruction: string | null
+  syntax_fingerprint: string | null
+  punctuation_fingerprint: string | null
+  preferred_words: string | null
+  structure_template: string | null
+  style_constraints: string | null
   version: number
   created_at: string
   updated_at: string
+}
+
+export interface StyleProfileMetrics {
+  style_category_id: string
+  metrics: Record<string, unknown>
 }
 
 export interface StyleProfileStatus {
@@ -95,6 +105,11 @@ export type StyleProfilePayload = Partial<
     | 'do_rules'
     | 'dont_rules'
     | 'prompt_instruction'
+    | 'syntax_fingerprint'
+    | 'punctuation_fingerprint'
+    | 'preferred_words'
+    | 'structure_template'
+    | 'style_constraints'
   >
 >
 

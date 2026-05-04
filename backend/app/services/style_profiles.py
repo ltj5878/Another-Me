@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.config import settings
 from app.models.article import SourceArticle
 from app.models.style import StyleCategory, StyleProfile
-from app.schemas.style_profile import PROFILE_FIELD_NAMES, StyleProfileStatusRead, StyleProfileUpdate
+from app.schemas.style_profile import PROFILE_FIELD_NAMES, StyleProfileMetricsRead, StyleProfileStatusRead, StyleProfileUpdate
+from app.services.style_metrics import analyze_style_metrics
 
 MIN_PROFILE_ARTICLES = 3
 MAX_PROFILE_INPUT_CHARS = 24000
@@ -47,6 +48,15 @@ def get_profile_status(db: Session, style_id: UUID) -> StyleProfileStatusRead:
         latest_article_at=latest_article_at,
         profile=profile,
     )
+
+
+def get_profile_metrics(db: Session, style_id: UUID) -> StyleProfileMetricsRead:
+    style = db.get(StyleCategory, style_id)
+    if style is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Style category not found")
+
+    articles = _load_completed_articles_with_chunks(db, style_id)
+    return StyleProfileMetricsRead(style_category_id=style_id, metrics=analyze_style_metrics(articles))
 
 
 def update_profile(db: Session, style_id: UUID, payload: StyleProfileUpdate) -> StyleProfileStatusRead:
@@ -92,7 +102,8 @@ def generate_profile(db: Session, style_id: UUID) -> StyleProfileStatusRead:
     if not snippets:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No completed article chunks are available")
 
-    generated = _call_deepseek_for_profile(style, snippets)
+    deep_metrics = analyze_style_metrics(articles)
+    generated = _call_deepseek_for_profile(style, snippets, deep_metrics)
     profile = style.style_profile
     if profile is None:
         profile = StyleProfile(style_category_id=style.id, profile_json={}, version=1)
@@ -100,7 +111,10 @@ def generate_profile(db: Session, style_id: UUID) -> StyleProfileStatusRead:
     else:
         profile.version += 1
 
-    profile.profile_json = generated
+    profile.profile_json = {
+        **generated,
+        "deep_metrics": deep_metrics,
+    }
     for field_name in PROFILE_FIELD_NAMES:
         setattr(profile, field_name, _coerce_profile_field(generated.get(field_name)))
 
@@ -156,7 +170,7 @@ def _select_representative_chunks(chunks: list) -> list:
     return [chunks[index] for index in sorted(selected_indexes)]
 
 
-def _call_deepseek_for_profile(style: StyleCategory, snippets: str) -> dict:
+def _call_deepseek_for_profile(style: StyleCategory, snippets: str, deep_metrics: dict) -> dict:
     client = OpenAI(api_key=settings.llm_api_key, base_url=settings.llm_base_url)
     response = client.chat.completions.create(
         model=settings.llm_model,
@@ -172,7 +186,7 @@ def _call_deepseek_for_profile(style: StyleCategory, snippets: str) -> dict:
             },
             {
                 "role": "user",
-                "content": _build_profile_prompt(style, snippets),
+                "content": _build_profile_prompt(style, snippets, deep_metrics),
             },
         ],
         stream=False,
@@ -188,8 +202,9 @@ def _call_deepseek_for_profile(style: StyleCategory, snippets: str) -> dict:
     return {field_name: _coerce_profile_field(payload.get(field_name)) for field_name in PROFILE_FIELD_NAMES}
 
 
-def _build_profile_prompt(style: StyleCategory, snippets: str) -> str:
+def _build_profile_prompt(style: StyleCategory, snippets: str, deep_metrics: dict) -> str:
     fields = "\n".join(f'- "{field_name}": string' for field_name in PROFILE_FIELD_NAMES)
+    metrics_json = json.dumps(deep_metrics, ensure_ascii=False, indent=2)
     return f"""
 请分析下面这些同一风格分类下的代表性文章分块，生成一份可用于后续模仿写作的结构化风格画像。
 
@@ -214,11 +229,21 @@ def _build_profile_prompt(style: StyleCategory, snippets: str) -> str:
 - do_rules：后续模仿时应该遵守的事项。
 - dont_rules：后续模仿时禁止或应该避免的事项。
 - prompt_instruction：能直接放进后续写作生成系统提示词的模仿指令。
+- syntax_fingerprint：把句长分布、长短句比例和节奏特征转化成明确写作指令。
+- punctuation_fingerprint：把标点频率和特殊标点习惯转化成节奏指令。
+- preferred_words：总结建议自然使用的高频词、私房词汇、连接词和语气词，不要求硬塞。
+- structure_template：总结可复用的起承转合、场景切入、递进或转折模板。
+- style_constraints：总结生成时的软约束，包括应该贴近哪些量化特征、避免哪些过拟合行为。
 
 注意：
 - 总结“表达方式”和“写作习惯”，不要复述文章情节。
 - 不要编造作者经历。
+- deep_metrics 是机器统计结果，必须结合它解释风格，不要忽略量化指标。
+- preferred_words 只作为自然建议，不要要求每篇文章机械使用全部词汇。
 - 禁止输出 JSON 之外的任何文字。
+
+量化风格指标 deep_metrics：
+{metrics_json}
 
 代表性分块：
 {snippets}

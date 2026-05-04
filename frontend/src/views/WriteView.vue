@@ -67,6 +67,7 @@
         <div v-if="store.profileLoading" class="writer-muted">正在读取画像...</div>
         <template v-else-if="selectedProfile">
           <p>{{ selectedProfile.summary || '这个风格还没有总体描述。' }}</p>
+          <div v-if="selectedDeepSummary" class="writer-deep-summary">{{ selectedDeepSummary }}</div>
           <el-tag v-if="store.currentProfile?.is_stale" class="writer-tag" type="warning" effect="plain">画像可能已过期</el-tag>
           <el-tag v-else class="writer-tag" type="success" effect="plain">已加载 v{{ selectedProfile.version }}</el-tag>
         </template>
@@ -264,6 +265,14 @@ watch(currentGeneration, () => {
 
 const selectedStyle = computed(() => store.styles.find((style) => style.id === form.styleId) || null)
 const selectedProfile = computed(() => (store.currentProfile?.style_category_id === form.styleId ? store.currentProfile.profile : null))
+const selectedDeepSummary = computed(() => {
+  const profile = selectedProfile.value
+  if (!profile) return ''
+  const parts = [profile.syntax_fingerprint, profile.punctuation_fingerprint, profile.structure_template]
+    .map((value) => value?.trim())
+    .filter(Boolean)
+  return parts.slice(0, 2).join('；')
+})
 const localPromptPreview = computed(() => {
   if (!selectedStyle.value || !selectedProfile.value || !form.userInput.trim()) return ''
   return [
@@ -537,6 +546,11 @@ function formatProfile(profile: StyleProfile | null) {
     `必须遵守：${profile.do_rules || '未填写'}`,
     `禁止事项：${profile.dont_rules || '未填写'}`,
     `模仿指令：${profile.prompt_instruction || '未填写'}`,
+    `句法指纹：${profile.syntax_fingerprint || '未填写'}`,
+    `标点习惯：${profile.punctuation_fingerprint || '未填写'}`,
+    `词汇偏好库：${profile.preferred_words || '未填写'}`,
+    `结构模板：${profile.structure_template || '未填写'}`,
+    `风格约束：${profile.style_constraints || '未填写'}`,
   ].join('\n')
 }
 

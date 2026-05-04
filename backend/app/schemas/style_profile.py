@@ -18,6 +18,11 @@ PROFILE_FIELD_NAMES = (
     "do_rules",
     "dont_rules",
     "prompt_instruction",
+    "syntax_fingerprint",
+    "punctuation_fingerprint",
+    "preferred_words",
+    "structure_template",
+    "style_constraints",
 )
 
 
@@ -35,6 +40,11 @@ class StyleProfileFields(BaseModel):
     do_rules: str | None = None
     dont_rules: str | None = None
     prompt_instruction: str | None = None
+    syntax_fingerprint: str | None = None
+    punctuation_fingerprint: str | None = None
+    preferred_words: str | None = None
+    structure_template: str | None = None
+    style_constraints: str | None = None
 
 
 class StyleProfileUpdate(StyleProfileFields):
@@ -50,6 +60,11 @@ class StyleProfileRead(StyleProfileFields):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class StyleProfileMetricsRead(BaseModel):
+    style_category_id: UUID
+    metrics: dict
 
 
 class StyleProfileStatusRead(BaseModel):

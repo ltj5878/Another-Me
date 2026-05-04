@@ -6,8 +6,7 @@
 -- Notes:
 --   - This script is intended for a fresh local database.
 --   - It uses psql meta-commands such as \gexec and \connect.
---   - Alembic is marked at revision 202605030004 because schema-changing
---     migrations currently stop there; later stages use existing JSONB fields.
+--   - Alembic is marked at the latest schema revision used by this project.
 
 \set ON_ERROR_STOP on
 
@@ -99,6 +98,11 @@ CREATE TABLE IF NOT EXISTS style_profiles (
   do_rules text,
   dont_rules text,
   prompt_instruction text,
+  syntax_fingerprint text,
+  punctuation_fingerprint text,
+  preferred_words text,
+  structure_template text,
+  style_constraints text,
   version integer NOT NULL DEFAULT 1,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
@@ -133,5 +137,5 @@ CREATE TABLE IF NOT EXISTS alembic_version (
 );
 
 INSERT INTO alembic_version (version_num)
-VALUES ('202605030004')
+VALUES ('202605030005')
 ON CONFLICT (version_num) DO NOTHING;

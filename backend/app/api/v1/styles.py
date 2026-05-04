@@ -9,9 +9,9 @@ from app.models.article import SourceArticle
 from app.models.style import StyleCategory
 from app.schemas.article import SourceArticleDetailRead, SourceArticleRead
 from app.schemas.style import WRITING_TYPE_HINTS, StyleCategoryCreate, StyleCategoryRead, StyleCategoryUpdate
-from app.schemas.style_profile import StyleProfileStatusRead, StyleProfileUpdate
+from app.schemas.style_profile import StyleProfileMetricsRead, StyleProfileStatusRead, StyleProfileUpdate
 from app.services.articles import upload_source_article
-from app.services.style_profiles import generate_profile, get_profile_status, update_profile
+from app.services.style_profiles import generate_profile, get_profile_metrics, get_profile_status, update_profile
 
 router = APIRouter()
 
@@ -112,6 +112,11 @@ def delete_style(style_id: UUID, db: Session = Depends(get_db)) -> None:
 @router.get("/{style_id}/profile", response_model=StyleProfileStatusRead)
 def get_style_profile(style_id: UUID, db: Session = Depends(get_db)) -> StyleProfileStatusRead:
     return get_profile_status(db, style_id)
+
+
+@router.get("/{style_id}/profile/metrics", response_model=StyleProfileMetricsRead)
+def get_style_profile_metrics(style_id: UUID, db: Session = Depends(get_db)) -> StyleProfileMetricsRead:
+    return get_profile_metrics(db, style_id)
 
 
 @router.post("/{style_id}/profile/generate", response_model=StyleProfileStatusRead)

@@ -304,6 +304,9 @@ def _build_user_prompt(
 【风格画像】
 {_format_style_profile(profile)}
 
+【深度风格约束】
+{_format_deep_style_constraints(profile)}
+
 【参考片段】
 {reference_text}
 
@@ -324,11 +327,12 @@ def _build_user_prompt(
 
 【生成要求】
 1. 模仿风格画像中的句式、节奏、结构、修辞和语气。
-2. 不要直接复制参考片段，也不要改写成近似原句。
-3. 不要说明自己在模仿。
-4. 不要使用模板化 AI 语言。
-5. 保持自然、完整、可发表。
-6. 只输出正文。
+2. 句长、标点、偏好词和篇章结构参考“深度风格约束”，但不要机械堆砌。
+3. 不要直接复制参考片段，也不要改写成近似原句。
+4. 不要说明自己在模仿。
+5. 不要使用模板化 AI 语言。
+6. 保持自然、完整、可发表。
+7. 只输出正文。
 """.strip()
 
 
@@ -350,6 +354,9 @@ def _build_revision_user_prompt(
 【风格画像】
 {_format_style_profile(profile)}
 
+【深度风格约束】
+{_format_deep_style_constraints(profile)}
+
 【参考片段】
 {reference_text}
 
@@ -365,9 +372,10 @@ def _build_revision_user_prompt(
 【改写要求】
 1. 基于当前正文继续修改，不要另起炉灶，除非操作是“重新生成”。
 2. 保留风格画像中的句式、节奏、结构、修辞和语气。
-3. 不要直接复制参考片段，也不要改写成近似原句。
-4. 不要说明自己在模仿或正在修改。
-5. 只输出修改后的正文。
+3. 参考“深度风格约束”调整句长、标点、偏好词和结构，不要机械复刻。
+4. 不要直接复制参考片段，也不要改写成近似原句。
+5. 不要说明自己在模仿或正在修改。
+6. 只输出修改后的正文。
 """.strip()
 
 
@@ -386,6 +394,11 @@ def _format_style_profile(profile: StyleProfile) -> str:
         "do_rules": "必须遵守",
         "dont_rules": "禁止事项",
         "prompt_instruction": "模仿指令",
+        "syntax_fingerprint": "句法指纹",
+        "punctuation_fingerprint": "标点指纹",
+        "preferred_words": "词汇偏好库",
+        "structure_template": "结构模板",
+        "style_constraints": "深度约束",
     }
     lines = []
     for field_name in PROFILE_FIELD_NAMES:
@@ -393,6 +406,27 @@ def _format_style_profile(profile: StyleProfile) -> str:
         if value:
             lines.append(f"{labels[field_name]}：{value}")
     return "\n".join(lines) or "未填写"
+
+
+def _format_deep_style_constraints(profile: StyleProfile) -> str:
+    lines = []
+    fields = [
+        ("syntax_fingerprint", "句法指纹"),
+        ("punctuation_fingerprint", "标点习惯"),
+        ("preferred_words", "词汇偏好库"),
+        ("structure_template", "结构模板"),
+        ("style_constraints", "风格约束"),
+    ]
+    for field_name, label in fields:
+        value = (getattr(profile, field_name) or "").strip()
+        if value:
+            lines.append(f"{label}：{value}")
+    if not lines:
+        return "暂无深度画像约束；仅使用基础风格画像。"
+    return "\n".join([
+        *lines,
+        "执行方式：这些是软约束。优先保持自然表达，偏好词只在语境合适时使用，不要为了贴近画像而牺牲文章完整性。",
+    ])
 
 
 def _format_references(references: list) -> str:

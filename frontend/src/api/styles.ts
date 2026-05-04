@@ -4,6 +4,7 @@ import type {
   SourceArticleDetail,
   StyleCategory,
   StyleCreatePayload,
+  StyleProfileMetrics,
   StyleProfilePayload,
   StyleProfileStatus,
   StyleUpdatePayload,
@@ -56,6 +57,12 @@ export async function uploadArticle(styleId: string, file: File): Promise<Source
 
 export async function fetchStyleProfile(styleId: string): Promise<StyleProfileStatus> {
   const { data } = await apiClient.get<StyleProfileStatus>(`/api/v1/styles/${styleId}/profile`)
+  return data
+}
+
+
+export async function fetchStyleProfileMetrics(styleId: string): Promise<StyleProfileMetrics> {
+  const { data } = await apiClient.get<StyleProfileMetrics>(`/api/v1/styles/${styleId}/profile/metrics`)
   return data
 }
 
