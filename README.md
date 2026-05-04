@@ -60,6 +60,7 @@ Another Me 是一个本地运行的“个人写作风格资料库 + AI 写作生
 │   │   ├── schemas/       # Pydantic Schema
 │   │   └── services/      # 文章、分块、embedding、检索、画像、生成逻辑
 │   ├── alembic/           # 数据库迁移
+│   ├── sql/               # 数据库初始化 SQL
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
@@ -129,12 +130,22 @@ LLM_TEMPERATURE=0.3
 
 ## 数据库迁移
 
+推荐使用 Alembic 初始化和升级数据库：
+
 ```bash
 cd backend
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/alembic upgrade head
 ```
+
+如果需要直接用 SQL 建库建表，也可以在项目根目录执行：
+
+```bash
+/opt/homebrew/opt/postgresql@16/bin/psql -d postgres -f backend/sql/init_database.sql
+```
+
+这个脚本会创建 `vibe_writer` 数据库、启用 `pgvector`、创建项目所需表和索引，并写入当前 Alembic 版本标记。
 
 当前迁移会创建：
 
